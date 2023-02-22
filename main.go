@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"golang.org/x/net/websocket"
 )
 
 type User struct {
@@ -16,8 +18,9 @@ type User struct {
 }
 
 type Wallet struct {
-	Id     string `json:"id"`
-	Amount int64  `json:"amount"`
+	Id        string `json:"id"`
+	WalletKey string `json:"wallet_key"`
+	Amount    int64  `json:"amount"`
 }
 
 type Deposit struct {
@@ -28,9 +31,18 @@ type Deposit struct {
 
 type Transaction struct {
 	Id       string `json:"id"`
+	Type     int    `json:"type"`
 	Amount   int64  `json:"amount"`
 	Sender   string `json:"sender"`
 	Receiver string `json:"receiver"`
+}
+
+type Claim struct {
+	Id       string `json:"id"`
+	Amount   int64  `json:"amount"`
+	Sender   string `json:"sender"`
+	Receiver string `json:"receiver"`
+	Accepted bool   `json:"accepted"`
 }
 
 func main() {
@@ -38,8 +50,10 @@ func main() {
 	transactions := []Transaction{}
 	wallets := []Wallet{}
 	deposits := []Deposit{}
+	claims := []Claim{}
 
 	engine := gin.Default()
+
 	engine.POST("/user/registration", func(c *gin.Context) {
 		id, err := uuid.NewRandom()
 		if err != nil {
@@ -51,6 +65,7 @@ func main() {
 			fmt.Println(err)
 			return
 		}
+
 		uu1 := id.String()
 		uu2 := walletId.String()
 		var request User
@@ -80,10 +95,7 @@ func main() {
 		users = append(users, request)
 
 		request.Wallet = newWallet
-
-		c.JSON(200, gin.H{
-			"user": request,
-		})
+		c.JSON(200, request)
 	})
 
 	engine.GET("/user/:username", func(c *gin.Context) {
@@ -116,6 +128,41 @@ func main() {
 		c.JSON(200, user)
 	})
 
+	engine.GET("/user/wallet/claim", func(ctx *gin.Context) {
+		websocket.Handler(func(ws *websocket.Conn) {
+			defer ws.Close()
+
+			err := websocket.Message.Send(ws, "Server: Hello, Client")
+			if err != nil {
+				log.Println(err)
+			}
+
+			for {
+				msg := ""
+				err := websocket.Message.Receive(ws, &msg)
+				if err != nil {
+					log.Println(err)
+				}
+
+				err = websocket.Message.Send(ws, fmt.Sprintf("Server: \"%s\" received!", msg))
+				if err != nil {
+					log.Println(err)
+				}
+			}
+		}).ServeHTTP(ctx.Writer, ctx.Request)
+	})
+
+	engine.GET("/transactions/claims/:username", func(ctx *gin.Context) {
+		var newClaims []Claim
+		username := ctx.Param("username")
+		for _, v := range claims {
+			if v.Id == username {
+				newClaims = append(newClaims, v)
+			}
+		}
+		ctx.JSON(http.StatusOK, newClaims)
+	})
+
 	engine.GET("/user/wallet/:walletId", func(c *gin.Context) {
 		var wallet *Wallet
 		walletId := c.Param("walletId")
@@ -140,26 +187,45 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		fmt.Println(request)
-		for i, v := range wallets {
-			if v.Id == request.Sender {
-				fmt.Println("I found the account")
-				if v.Amount < request.Amount {
-					fmt.Println("Out of balance")
-					c.JSON(http.StatusBadRequest, gin.H{
-						"message": "out of balance",
-					})
-					return
+
+		if request.Type == 1 {
+			for i, v := range wallets {
+				if v.Id == request.Sender {
+					fmt.Println("I found the account")
+					if v.Amount < request.Amount {
+						fmt.Println("Out of balance")
+						c.JSON(http.StatusBadRequest, gin.H{
+							"message": "out of balance",
+						})
+						return
+					}
+					v.Amount -= request.Amount
+					wallets[i] = v
 				}
-				v.Amount -= request.Amount
-				wallets[i] = v
+				if v.Id == request.Receiver {
+					v.Amount += request.Amount
+					wallets[i] = v
+				}
 			}
-			if v.Id == request.Receiver {
-				v.Amount += request.Amount
-				wallets[i] = v
+			transactions = append(transactions, request)
+		} else if request.Type == 2 {
+			isExist := false
+			for _, v := range users {
+				if v.Id == request.Receiver {
+					isExist = true
+				}
 			}
+			if !isExist {
+				c.JSON(http.StatusBadRequest, gin.H{"is_succeed": false})
+				return
+			}
+			id, err := uuid.NewRandom()
+			if err != nil {
+				return
+			}
+			uu1 := id.String()
+			claims = append(claims, Claim{Id: uu1, Amount: request.Amount, Sender: request.Sender, Receiver: request.Receiver, Accepted: false})
 		}
-		transactions = append(transactions, request)
 		c.JSON(http.StatusOK, gin.H{"is_succeed": true})
 	})
 
